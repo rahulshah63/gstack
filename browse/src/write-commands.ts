@@ -9,6 +9,37 @@ import type { BrowserManager } from './browser-manager';
 import { findInstalledBrowsers, importCookies } from './cookie-import-browser';
 import * as fs from 'fs';
 import * as path from 'path';
+import { safeDirs, isPathSafe, openArgs } from './paths';
+
+/**
+ * Validate URL to prevent SSRF and local file access attacks
+ * Only allows http:// and https:// protocols, blocks file://, data:, etc.
+ */
+function validateUrl(url: string): void {
+  try {
+    const parsed = new URL(url);
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      throw new Error(`Invalid URL protocol: ${parsed.protocol}. Only http:// and https:// are allowed.`);
+    }
+    const allowLocalhost = process.env.BROWSE_ALLOW_LOCALHOST === '1';
+    const hostname = parsed.hostname.toLowerCase();
+    const blockedMetadataHosts = ['metadata.google.internal', 'metadata.google'];
+    if (blockedMetadataHosts.includes(hostname)) {
+      throw new Error(`Access to ${hostname} is not allowed for security reasons.`);
+    }
+    // Localhost access is blocked by default; tests/dev can explicitly opt in.
+    const blockedLocalHosts = ['localhost', '127.0.0.1', '0.0.0.0', '::1'];
+    if (!allowLocalhost && (blockedLocalHosts.includes(hostname) || hostname.endsWith('.local'))) {
+      throw new Error(`Access to ${hostname} is not allowed for security reasons. Set BROWSE_ALLOW_LOCALHOST=1 to allow local URLs.`);
+    }
+  } catch (e) {
+    if (e instanceof TypeError) {
+      // URL parsing failed - likely a local path like /etc/passwd
+      throw new Error(`Invalid URL format. Please provide a valid http:// or https:// URL.`);
+    }
+    throw e;
+  }
+}
 
 export async function handleWriteCommand(
   command: string,
@@ -21,6 +52,7 @@ export async function handleWriteCommand(
     case 'goto': {
       const url = args[0];
       if (!url) throw new Error('Usage: browse goto <url>');
+      validateUrl(url); // Security: prevent SSRF attacks
       const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
       const status = response?.status() || 'unknown';
       return `Navigated to ${url} (${status})`;
@@ -45,8 +77,22 @@ export async function handleWriteCommand(
       const selector = args[0];
       if (!selector) throw new Error('Usage: browse click <selector>');
       const resolved = bm.resolveRef(selector);
-      if ('locator' in resolved) {
-        await resolved.locator.click({ timeout: 5000 });
+      if ('handle' in resolved) {
+        const beforeUrl = page.url();
+        try {
+          await resolved.handle.click({ timeout: 5000 });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          const maybeNavigationSettled =
+            (message.includes('Execution context was destroyed') ||
+              message.includes('Target page, context or browser has been closed')) &&
+            page.url() !== beforeUrl;
+          if (maybeNavigationSettled) {
+            await page.waitForLoadState('domcontentloaded').catch(() => {});
+          } else {
+            bm.rethrowIfStaleRef(selector, err);
+          }
+        }
       } else {
         await page.click(resolved.selector, { timeout: 5000 });
       }
@@ -58,10 +104,14 @@ export async function handleWriteCommand(
     case 'fill': {
       const [selector, ...valueParts] = args;
       const value = valueParts.join(' ');
-      if (!selector || !value) throw new Error('Usage: browse fill <selector> <value>');
+      if (!selector || args.length < 2) throw new Error('Usage: browse fill <selector> <value>');
       const resolved = bm.resolveRef(selector);
-      if ('locator' in resolved) {
-        await resolved.locator.fill(value, { timeout: 5000 });
+      if ('handle' in resolved) {
+        try {
+          await resolved.handle.fill(value, { timeout: 5000 });
+        } catch (err) {
+          bm.rethrowIfStaleRef(selector, err);
+        }
       } else {
         await page.fill(resolved.selector, value, { timeout: 5000 });
       }
@@ -71,10 +121,14 @@ export async function handleWriteCommand(
     case 'select': {
       const [selector, ...valueParts] = args;
       const value = valueParts.join(' ');
-      if (!selector || !value) throw new Error('Usage: browse select <selector> <value>');
+      if (!selector || args.length < 2) throw new Error('Usage: browse select <selector> <value>');
       const resolved = bm.resolveRef(selector);
-      if ('locator' in resolved) {
-        await resolved.locator.selectOption(value, { timeout: 5000 });
+      if ('handle' in resolved) {
+        try {
+          await resolved.handle.selectOption(value, { timeout: 5000 });
+        } catch (err) {
+          bm.rethrowIfStaleRef(selector, err);
+        }
       } else {
         await page.selectOption(resolved.selector, value, { timeout: 5000 });
       }
@@ -85,8 +139,12 @@ export async function handleWriteCommand(
       const selector = args[0];
       if (!selector) throw new Error('Usage: browse hover <selector>');
       const resolved = bm.resolveRef(selector);
-      if ('locator' in resolved) {
-        await resolved.locator.hover({ timeout: 5000 });
+      if ('handle' in resolved) {
+        try {
+          await resolved.handle.hover({ timeout: 5000 });
+        } catch (err) {
+          bm.rethrowIfStaleRef(selector, err);
+        }
       } else {
         await page.hover(resolved.selector, { timeout: 5000 });
       }
@@ -111,8 +169,12 @@ export async function handleWriteCommand(
       const selector = args[0];
       if (selector) {
         const resolved = bm.resolveRef(selector);
-        if ('locator' in resolved) {
-          await resolved.locator.scrollIntoViewIfNeeded({ timeout: 5000 });
+        if ('handle' in resolved) {
+          try {
+            await resolved.handle.scrollIntoViewIfNeeded({ timeout: 5000 });
+          } catch (err) {
+            bm.rethrowIfStaleRef(selector, err);
+          }
         } else {
           await page.locator(resolved.selector).scrollIntoViewIfNeeded({ timeout: 5000 });
         }
@@ -140,8 +202,12 @@ export async function handleWriteCommand(
       }
       const timeout = args[1] ? parseInt(args[1], 10) : 15000;
       const resolved = bm.resolveRef(selector);
-      if ('locator' in resolved) {
-        await resolved.locator.waitFor({ state: 'visible', timeout });
+      if ('handle' in resolved) {
+        try {
+          await resolved.handle.waitForElementState('visible', { timeout });
+        } catch (err) {
+          bm.rethrowIfStaleRef(selector, err);
+        }
       } else {
         await page.waitForSelector(resolved.selector, { timeout });
       }
@@ -158,16 +224,28 @@ export async function handleWriteCommand(
 
     case 'cookie': {
       const cookieStr = args[0];
-      if (!cookieStr || !cookieStr.includes('=')) throw new Error('Usage: browse cookie <name>=<value>');
+      if (!cookieStr || !cookieStr.includes('=')) throw new Error('Usage: browse cookie <name>=<value> [origin]');
       const eq = cookieStr.indexOf('=');
       const name = cookieStr.slice(0, eq);
       const value = cookieStr.slice(eq + 1);
-      const url = new URL(page.url());
+      let cookieUrl: string;
+      if (args[1]) {
+        try {
+          cookieUrl = new URL(args[1]).origin;
+        } catch {
+          throw new Error('Usage: browse cookie <name>=<value> [origin]');
+        }
+      } else {
+        const currentUrl = page.url();
+        if (currentUrl === 'about:blank') {
+          throw new Error('Usage: browse cookie <name>=<value> [origin]');
+        }
+        cookieUrl = new URL(currentUrl).origin;
+      }
       await page.context().addCookies([{
         name,
         value,
-        domain: url.hostname,
-        path: '/',
+        url: cookieUrl,
       }]);
       return `Cookie set: ${name}=****`;
     }
@@ -205,8 +283,8 @@ export async function handleWriteCommand(
       }
 
       const resolved = bm.resolveRef(selector);
-      if ('locator' in resolved) {
-        await resolved.locator.setInputFiles(filePaths);
+      if ('handle' in resolved) {
+        await resolved.handle.setInputFiles(filePaths);
       } else {
         await page.locator(resolved.selector).setInputFiles(filePaths);
       }
@@ -238,10 +316,8 @@ export async function handleWriteCommand(
       if (!filePath) throw new Error('Usage: browse cookie-import <json-file>');
       // Path validation — prevent reading arbitrary files
       if (path.isAbsolute(filePath)) {
-        const safeDirs = ['/tmp', process.cwd()];
-        const resolved = path.resolve(filePath);
-        if (!safeDirs.some(dir => resolved === dir || resolved.startsWith(dir + '/'))) {
-          throw new Error(`Path must be within: ${safeDirs.join(', ')}`);
+        if (!isPathSafe(filePath)) {
+          throw new Error(`Path must be within: ${safeDirs().join(', ')}`);
         }
       }
       if (path.normalize(filePath).includes('..')) {
@@ -298,7 +374,7 @@ export async function handleWriteCommand(
 
       const pickerUrl = `http://127.0.0.1:${port}/cookie-picker`;
       try {
-        Bun.spawn(['open', pickerUrl], { stdout: 'ignore', stderr: 'ignore' });
+        Bun.spawn([...openArgs(), pickerUrl], { stdout: 'ignore', stderr: 'ignore' });
       } catch {
         // open may fail silently — URL is in the message below
       }

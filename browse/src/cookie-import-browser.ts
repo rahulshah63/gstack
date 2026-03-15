@@ -32,17 +32,27 @@
  *   └──────────────────────────────────────────────────────────────────┘
  */
 
-import { Database } from 'bun:sqlite';
+// Dynamic import — bun:sqlite is unavailable when running under Node/tsx on Windows
+let Database: any;
+try {
+  Database = require('bun:sqlite').Database;
+} catch {
+  // Running under Node — cookie-import-browser commands won't work, but server can start
+  Database = null;
+}
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { tempPath } from './paths';
 
 // ─── Types ──────────────────────────────────────────────────────
 
 export interface BrowserInfo {
   name: string;
   dataDir: string;        // relative to ~/Library/Application Support/
+  // Back-compat name used by tests and older callers.
+  secretId: string;
   keychainService: string;
   aliases: string[];
 }
@@ -85,11 +95,11 @@ export class CookieImportError extends Error {
 // Hardcoded — NEVER interpolate user input into shell commands.
 
 const BROWSER_REGISTRY: BrowserInfo[] = [
-  { name: 'Comet',  dataDir: 'Comet/',                       keychainService: 'Comet Safe Storage',          aliases: ['comet', 'perplexity'] },
-  { name: 'Chrome', dataDir: 'Google/Chrome/',                keychainService: 'Chrome Safe Storage',         aliases: ['chrome', 'google-chrome'] },
-  { name: 'Arc',    dataDir: 'Arc/User Data/',                keychainService: 'Arc Safe Storage',            aliases: ['arc'] },
-  { name: 'Brave',  dataDir: 'BraveSoftware/Brave-Browser/',  keychainService: 'Brave Safe Storage',          aliases: ['brave'] },
-  { name: 'Edge',   dataDir: 'Microsoft Edge/',               keychainService: 'Microsoft Edge Safe Storage', aliases: ['edge'] },
+  { name: 'Comet',  dataDir: 'Comet/',                       secretId: 'Comet Safe Storage',          keychainService: 'Comet Safe Storage',          aliases: ['comet', 'perplexity'] },
+  { name: 'Chrome', dataDir: 'Google/Chrome/',               secretId: 'Chrome Safe Storage',         keychainService: 'Chrome Safe Storage',         aliases: ['chrome', 'google-chrome'] },
+  { name: 'Arc',    dataDir: 'Arc/User Data/',               secretId: 'Arc Safe Storage',            keychainService: 'Arc Safe Storage',            aliases: ['arc'] },
+  { name: 'Brave',  dataDir: 'BraveSoftware/Brave-Browser/', secretId: 'Brave Safe Storage',          keychainService: 'Brave Safe Storage',          aliases: ['brave'] },
+  { name: 'Edge',   dataDir: 'Microsoft Edge/',              secretId: 'Microsoft Edge Safe Storage', keychainService: 'Microsoft Edge Safe Storage', aliases: ['edge'] },
 ];
 
 // ─── Key Cache ──────────────────────────────────────────────────
@@ -104,6 +114,7 @@ const keyCache = new Map<string, Buffer>();
  * Find which browsers are installed (have a cookie DB on disk).
  */
 export function findInstalledBrowsers(): BrowserInfo[] {
+  if (process.platform !== 'darwin') return [];
   const appSupport = path.join(os.homedir(), 'Library', 'Application Support');
   return BROWSER_REGISTRY.filter(b => {
     const dbPath = path.join(appSupport, b.dataDir, 'Default', 'Cookies');
@@ -131,6 +142,14 @@ export function listDomains(browserName: string, profile = 'Default'): { domains
   } finally {
     db.close();
   }
+}
+
+export function getOpenCommand(): string {
+  return process.platform === 'darwin' ? 'open' : 'xdg-open';
+}
+
+export function getDefaultBrowser(): string {
+  return process.platform === 'darwin' ? 'comet' : 'chrome';
 }
 
 /**
@@ -190,7 +209,7 @@ function resolveBrowser(nameOrAlias: string): BrowserInfo {
     b.aliases.includes(needle) || b.name.toLowerCase() === needle
   );
   if (!found) {
-    const supported = BROWSER_REGISTRY.flatMap(b => b.aliases).join(', ');
+    const supported = BROWSER_REGISTRY.map(b => b.name).join(', ');
     throw new CookieImportError(
       `Unknown browser '${nameOrAlias}'. Supported: ${supported}`,
       'unknown_browser',
@@ -241,7 +260,7 @@ function openDb(dbPath: string, browserName: string): Database {
 }
 
 function openDbFromCopy(dbPath: string, browserName: string): Database {
-  const tmpPath = `/tmp/browse-cookies-${browserName.toLowerCase()}-${crypto.randomUUID()}.db`;
+  const tmpPath = tempPath(`browse-cookies-${browserName.toLowerCase()}-${crypto.randomUUID()}.db`);
   try {
     fs.copyFileSync(dbPath, tmpPath);
     // Also copy WAL and SHM if they exist (for consistent reads)
@@ -274,6 +293,13 @@ function openDbFromCopy(dbPath: string, browserName: string): Database {
 // ─── Internal: Keychain Access (async, 10s timeout) ─────────────
 
 async function getDerivedKey(browser: BrowserInfo): Promise<Buffer> {
+  if (process.platform !== 'darwin') {
+    throw new CookieImportError(
+      'Browser cookie import is only supported on macOS. Use "cookie-import <json-file>" to import cookies from a JSON file.',
+      'unsupported_platform',
+    );
+  }
+
   const cached = keyCache.get(browser.keychainService);
   if (cached) return cached;
 

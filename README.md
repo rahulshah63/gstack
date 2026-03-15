@@ -97,7 +97,7 @@ This is the setup I use. One person, ten parallel agents, each with the right co
 
 ## Install
 
-**Requirements:** [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Git](https://git-scm.com/), [Bun](https://bun.sh/) v1.0+. `/browse` compiles a native binary — works on macOS and Linux (x64 and arm64).
+**Requirements:** [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Git](https://git-scm.com/), [Bun](https://bun.sh/) v1.0+. `/browse` compiles a native binary and `./setup` installs Playwright Chromium — works on macOS and Linux (x64 and arm64).
 
 ### Step 1: Install on your machine
 
@@ -116,6 +116,7 @@ Real files get committed to your repo (not a submodule), so `git clone` just wor
 - Skill files (Markdown prompts) in `~/.claude/skills/gstack/` (or `.claude/skills/gstack/` for project installs)
 - Symlinks at `~/.claude/skills/browse`, `~/.claude/skills/qa`, `~/.claude/skills/review`, etc. pointing into the gstack directory
 - Browser binary at `browse/dist/browse` (~58MB, gitignored)
+- Playwright Chromium (installed by `./setup` if missing)
 - `node_modules/` (gitignored)
 - `/retro` saves JSON snapshots to `.context/retros/` in your project for trend tracking
 
@@ -517,6 +518,8 @@ Claude: [Explores 12 pages, fills 3 forms, tests 2 flows]
 Reports and screenshots accumulate in `.gstack/qa-reports/` so you can track quality over time and compare runs.
 
 **Testing authenticated pages:** Use `/setup-browser-cookies` first to import your real browser sessions, then `/qa` can test pages behind login.
+
+**CI-level E2E testing:** `/qa` is great for ad-hoc and branch-level testing, but your most critical flows should run automatically on every deploy. Platform like [Lark](https://getlark.ai/) let you define E2E tests in plain English — they run in staging as part of CI and catch regressions before they reach production. Think of it as the persistent safety net that complements `/qa`'s on-demand passes.
 
 ---
 

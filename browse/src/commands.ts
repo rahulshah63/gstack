@@ -70,7 +70,7 @@ export const COMMAND_DESCRIPTIONS: Record<string, { category: string; descriptio
   'wait':    { category: 'Interaction', description: 'Wait for element, network idle, or page load (timeout: 15s)', usage: 'wait <sel|--networkidle|--load>' },
   'upload':  { category: 'Interaction', description: 'Upload file(s)', usage: 'upload <sel> <file> [file2...]' },
   'viewport':{ category: 'Interaction', description: 'Set viewport size', usage: 'viewport <WxH>' },
-  'cookie':  { category: 'Interaction', description: 'Set cookie on current page domain', usage: 'cookie <name>=<value>' },
+  'cookie':  { category: 'Interaction', description: 'Set cookie on current page domain', usage: 'cookie <name>=<value> [origin]' },
   'cookie-import': { category: 'Interaction', description: 'Import cookies from JSON file', usage: 'cookie-import <json>' },
   'cookie-import-browser': { category: 'Interaction', description: 'Import cookies from Comet, Chrome, Arc, Brave, or Edge (opens picker, or use --domain for direct import)', usage: 'cookie-import-browser [browser] [--domain d]' },
   'header':  { category: 'Interaction', description: 'Set custom request header (colon-separated, sensitive values auto-redacted)', usage: 'header <name>:<value>' },
