@@ -44,8 +44,9 @@ if [ -z "$TRANSCRIPT" ]; then
   echo "SESSION_COST=unavailable"
   echo "ELAPSED=unavailable"
 else
-  # Compute cost and timestamps in one awk pass
-  eval $(jq -r 'select(.message.usage) | [
+  # Compute cost and timestamps — output to temp file, then read (no eval)
+  METRICS_FILE=$(mktemp)
+  jq -r 'select(.message.usage) | [
     (.message.usage.input_tokens // 0),
     (.message.usage.cache_creation_input_tokens // 0),
     (.message.usage.cache_read_input_tokens // 0),
@@ -56,17 +57,27 @@ else
   { input += $1; cache_write += $2; cache_read += $3; output += $4; last_ts = $5 }
   END {
     cost = (input * 3 + cache_write * 3.75 + cache_read * 0.30 + output * 15) / 1000000
-    printf "SESSION_COST=$%.4f\nFIRST_TS=%s\nLAST_TS=%s\n", cost, first_ts, last_ts
-  }')
+    printf "%.4f\n%s\n%s\n", cost, first_ts, last_ts
+  }' > "$METRICS_FILE"
 
-  # Compute elapsed time
-  ELAPSED=$(python3 -c "
+  SESSION_COST=$(sed -n '1p' "$METRICS_FILE")
+  FIRST_TS=$(sed -n '2p' "$METRICS_FILE")
+  LAST_TS=$(sed -n '3p' "$METRICS_FILE")
+  rm -f "$METRICS_FILE"
+
+  # Compute elapsed time — pass timestamps as arguments, not string interpolation
+  ELAPSED=$(python3 - "$FIRST_TS" "$LAST_TS" <<'PYEOF'
+import sys
 from datetime import datetime
 def p(s): return datetime.fromisoformat(s.replace('Z','+00:00'))
-diff = p('$LAST_TS') - p('$FIRST_TS')
-m = int(diff.total_seconds() / 60)
-print(f'{m//60}h {m%60}m' if m >= 60 else f'{m}m')
-" 2>/dev/null || echo "unavailable")
+try:
+    diff = p(sys.argv[2]) - p(sys.argv[1])
+    m = int(diff.total_seconds() / 60)
+    print(f'{m//60}h {m%60}m' if m >= 60 else f'{m}m')
+except Exception:
+    print("unavailable")
+PYEOF
+)
 
   echo "SESSION_COST=$SESSION_COST"
   echo "ELAPSED=$ELAPSED"

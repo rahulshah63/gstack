@@ -338,13 +338,17 @@ def load_team_exports(team_dir: str) -> list[dict]:
     """Load all user export files from a shared team directory."""
     if not team_dir:
         return []
-    td = Path(team_dir)
+    td = Path(team_dir).resolve()
     if not td.exists():
         return []
     members = []
     for f in sorted(td.glob("*.json")):
+        # Skip symlinks and files outside team_dir to prevent traversal
+        rf = f.resolve()
+        if f.is_symlink() or not rf.is_relative_to(td):
+            continue
         try:
-            with open(f) as fh:
+            with open(rf) as fh:
                 data = json.load(fh)
             if isinstance(data, dict) and "user" in data:
                 members.append(data)
@@ -952,11 +956,20 @@ def export_data(cfg: dict):
         print(warn("\n  team_dir not set. Run `python3 ai_spend.py --setup` first.\n"))
         return
 
-    td = Path(team_dir)
+    td = Path(team_dir).resolve()
     td.mkdir(parents=True, exist_ok=True)
 
-    user   = cfg.get("user", "me")
-    outfile = td / f"{user}.json"
+    user = cfg.get("user", "me")
+    # Sanitize username — alphanumeric, hyphens, underscores only
+    import re
+    safe_user = re.sub(r'[^a-zA-Z0-9_-]', '_', user)
+    if not safe_user:
+        safe_user = "me"
+    outfile = td / f"{safe_user}.json"
+    # Ensure outfile is within team_dir (prevent path traversal)
+    if not outfile.resolve().is_relative_to(td):
+        print(err("  Invalid username — path traversal detected."))
+        return
     with open(outfile, "w") as f:
         json.dump(payload, f, indent=2)
 

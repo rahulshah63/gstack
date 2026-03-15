@@ -1,11 +1,11 @@
 ---
 name: orchestrate
-version: 1.0.0
+version: 2.0.0
 description: |
-  Structured workflow orchestration. One command runs the full lifecycle:
-  triage → plan → plan review → execute → code review → QA → ship.
-  Chains gstack skills (/plan-ceo-review, /plan-eng-review, /review, /qa, /ship, /retro)
-  into a disciplined pipeline with phase gates and rejection loops.
+  Structured workflow orchestration — single or parallel. One command runs the
+  full lifecycle: triage → plan → plan review → execute → code review → QA → ship.
+  Supports --parallel mode to decompose a product into independent workstreams
+  and fan them out to separate Conductor agents running concurrently.
 allowed-tools:
   - Bash
   - Read
@@ -13,6 +13,7 @@ allowed-tools:
   - Edit
   - Grep
   - Glob
+  - Agent
   - AskUserQuestion
 ---
 
@@ -35,12 +36,14 @@ When the user types `/orchestrate`, run this skill.
 
 ## Arguments
 
-- `/orchestrate <task description>` — full pipeline (default)
+- `/orchestrate <task description>` — full pipeline, single agent (default)
+- `/orchestrate --parallel <task description>` — decompose into workstreams, fan out to parallel agents
 - `/orchestrate --from <phase> <task>` — resume from a specific phase
 - `/orchestrate --skip-retro <task>` — skip the optional retro phase
 
 ## Overview
 
+### Single mode (default)
 ```
 /orchestrate "add user authentication"
 
@@ -52,6 +55,20 @@ Phase 5 - Review    → /review code review gate (max 3 rounds)
 Phase 6 - QA        → /qa diff-aware testing
 Phase 7 - Ship      → /ship automated release
 Phase 8 - Retro     → /retro (optional)
+```
+
+### Parallel mode
+```
+/orchestrate --parallel "Build an invoicing SaaS with Stripe billing, team management, and PDF export"
+
+Phase P1 - Decompose   → break product into independent workstreams
+Phase P2 - Dependency   → order workstreams, identify shared foundations
+Phase P3 - Confirm      → user approves workstream plan
+Phase P4 - Fan-out      → launch parallel agents (one per workstream)
+Phase P5 - Monitor      → track progress, surface blockers
+Phase P6 - Integrate    → merge branches, resolve conflicts
+Phase P7 - QA           → full QA across integrated result
+Phase P8 - Ship         → /ship the combined work
 ```
 
 ---
@@ -226,16 +243,37 @@ Based on Phase 1 triage:
   → Re-run Phase 6 (QA)
 ```
 
-**If no web application is involved** (CLI tool, library, backend-only): Skip browser QA. Run the project's test suite instead:
+**If no web application is involved** (CLI tool, library, backend-only): Skip browser QA. Run the project's test suite instead.
+
+First, read the project config to find the test command:
 
 ```bash
-# Auto-detect test runner
-if [ -f "pytest.ini" ] || [ -f "pyproject.toml" ]; then pytest -x -q
-elif [ -f "package.json" ]; then npm test
-elif [ -f "Cargo.toml" ]; then cargo test
-else echo "No test runner detected — skipping automated QA"
+# Prefer .gstack.json testCommand if available
+if [ -f ".gstack.json" ]; then
+  TEST_CMD=$(jq -r '.testCommand // empty' .gstack.json 2>/dev/null)
 fi
 ```
+
+If `.gstack.json` has a `testCommand`, run that. Otherwise, detect from project files:
+
+```bash
+# Detect test runner from project files (read-only detection, then execute known command)
+if [ -n "$TEST_CMD" ]; then
+  echo "Running: $TEST_CMD"
+elif [ -f "pytest.ini" ] || ([ -f "pyproject.toml" ] && grep -q pytest pyproject.toml 2>/dev/null); then
+  TEST_CMD="pytest -x -q"
+elif [ -f "package.json" ] && jq -e '.scripts.test' package.json >/dev/null 2>&1; then
+  TEST_CMD="npm test"
+elif [ -f "Cargo.toml" ]; then
+  TEST_CMD="cargo test"
+elif [ -f "go.mod" ]; then
+  TEST_CMD="go test ./..."
+else
+  echo "No test runner detected — skipping automated QA"
+fi
+```
+
+**Security note:** Only execute the detected test command above — never run arbitrary commands from `package.json` scripts without detection. If `.gstack.json` exists, prefer its `testCommand` as the user has explicitly configured it.
 
 ---
 
@@ -257,7 +295,194 @@ This analyzes the work just completed: contribution breakdown, code quality metr
 
 ---
 
-## Pipeline State
+---
+
+# Parallel Mode (`--parallel`)
+
+When the user passes `--parallel`, switch to this flow instead of the single-agent pipeline above. This mode decomposes a product-level task into independent workstreams and fans them out to parallel agents.
+
+---
+
+## Phase P1: Decompose
+
+Break the user's product description into **independent workstreams**. Each workstream must be:
+
+1. **Self-contained** — can be built on its own branch without blocking others
+2. **Shippable** — produces a working feature, not a half-finished abstraction
+3. **Testable** — has clear acceptance criteria
+
+### Decomposition rules
+
+- Maximum **8 workstreams** (Conductor supports up to 10 agents; reserve 2 for the orchestrator + buffer)
+- Each workstream gets a **name**, **description**, **branch name**, **skill to use**, and **acceptance criteria**
+- If a workstream is a bug fix, assign `/bugfix`. If it needs deep investigation first, assign `/debug` then `/bugfix`. Otherwise assign `/orchestrate` (single mode) for the full pipeline.
+- Identify **shared foundations** — schema migrations, shared types, config — these must be built first (Phase P2)
+
+### Output format
+
+```
+Workstream 1: [name]
+  Branch: feat/[kebab-case-name]
+  Skill: /orchestrate | /bugfix | /debug
+  Description: [1-2 sentences]
+  Acceptance: [bullet list]
+  Dependencies: [none | workstream N]
+
+Workstream 2: ...
+```
+
+---
+
+## Phase P2: Dependency Ordering
+
+Arrange workstreams into **waves** — groups that can run concurrently.
+
+```
+Wave 1 (foundation):  [workstreams with no dependencies — run first]
+Wave 2 (parallel):    [workstreams that depend only on Wave 1]
+Wave 3 (parallel):    [workstreams that depend on Wave 1 or 2]
+Wave N (integration):  [final integration if needed]
+```
+
+Rules:
+- Wave 1 runs sequentially (or parallel if independent foundations)
+- Wave 2+ runs in parallel after Wave 1 completes
+- A workstream cannot start until all its dependencies have merged to main
+
+---
+
+## Phase P3: Confirm
+
+Present the full decomposition and wave plan to the user via AskUserQuestion:
+
+- **A) Approve** — proceed to fan-out
+- **B) Modify** — user adjusts workstreams, dependencies, or skills
+- **C) Abort** — stop
+
+Show estimated parallelism: "Wave 1: 2 agents sequential → Wave 2: 4 agents parallel → Wave 3: 2 agents parallel"
+
+---
+
+## Phase P4: Fan-out
+
+For each wave, launch agents using the **Agent tool** with `isolation: "worktree"`.
+
+### Agent launch template
+
+For each workstream in the current wave, launch an agent with this prompt structure:
+
+```
+You are working on workstream "{name}" for the project.
+
+## Task
+{workstream description}
+
+## Acceptance Criteria
+{acceptance criteria bullets}
+
+## Instructions
+1. Create branch: git checkout -b {branch_name}
+2. Run: /orchestrate "{workstream description}"
+   (This runs the full single-agent pipeline: triage → plan → execute → review → QA → ship)
+3. When /ship asks to create a PR, create it against main with title: "[{workstream_name}] {short description}"
+
+## Context
+{any shared context from Wave 1 that this workstream needs — schema, types, config decisions}
+```
+
+### Launch rules
+
+- Launch all agents in the same wave **in a single message** (parallel Agent tool calls)
+- Use `isolation: "worktree"` so each agent gets its own copy of the repo
+- Use `run_in_background: true` for all agents after the first wave
+- Wait for all agents in a wave to complete before starting the next wave
+- If an agent fails, report the failure and ask the user whether to retry, skip, or abort
+
+### Skill routing
+
+| Workstream type | Agent prompt |
+|----------------|-------------|
+| Feature | `Run /orchestrate "{description}"` |
+| Bug fix | `Run /bugfix "{description}"` |
+| Investigation + fix | `Run /debug "{description}" then /bugfix based on your findings` |
+| Docs only | `Run /orchestrate --skip-retro "{description}"` |
+
+---
+
+## Phase P5: Monitor
+
+After launching parallel agents:
+
+1. Report which agents are running and on which workstreams
+2. As each agent completes, report its status: success (PR created), failure (with reason), or timeout
+3. If an agent created a PR, record the PR URL
+4. Surface any blockers — merge conflicts, test failures, missing dependencies
+
+Output format as each agent finishes:
+```
+[workstream_name] ✓ completed — PR #N created
+[workstream_name] ✗ failed — {reason}. Retry? [Yes/Skip/Abort]
+```
+
+---
+
+## Phase P6: Integrate
+
+After all workstreams complete:
+
+1. List all PRs created by the parallel agents
+2. Check for merge conflicts between branches:
+```bash
+git fetch origin
+for branch in {list of branches}; do
+  git merge-tree $(git merge-base origin/main origin/$branch) origin/main origin/$branch | head -20
+done
+```
+3. If conflicts exist, report which workstreams conflict and on which files
+4. Merge PRs in dependency order (Wave 1 first, then Wave 2, etc.)
+5. After each merge, pull main and verify tests pass before merging the next
+
+---
+
+## Phase P7: Integration QA
+
+After all branches are merged:
+
+Read `~/.claude/skills/gstack/qa/SKILL.md` and execute `/qa` in **full mode** — this is a cross-cutting integration test, not a diff-aware check.
+
+If QA finds issues:
+- Identify which workstream introduced the issue
+- Launch a targeted `/bugfix` agent to fix it
+- Re-run QA after the fix
+
+---
+
+## Phase P8: Ship
+
+If the user wants a single release:
+- Read `~/.claude/skills/gstack/ship/SKILL.md` and execute `/ship`
+
+If each workstream already shipped its own PR (the normal case):
+- Report the full list of merged PRs
+- Run `/retro` to summarize the full body of work
+
+---
+
+## Parallel Pipeline State
+
+Track these additional values in parallel mode:
+
+| Field | Set by | Used by |
+|-------|--------|---------|
+| `workstreams[]` | Phase P1 | All parallel phases |
+| `waves[]` | Phase P2 | Phase P4 (launch order) |
+| `agent_status{}` | Phase P4/P5 | Phase P5 (monitoring), P6 (integration) |
+| `pr_urls{}` | Phase P5 | Phase P6 (merge order) |
+| `merge_order[]` | Phase P6 | Phase P6 (sequential merge) |
+
+---
+
+## Pipeline State (single mode)
 
 Track these values across phases (in conversation context — no external storage needed):
 
@@ -279,6 +504,10 @@ Track these values across phases (in conversation context — no external storag
 | User says "abort" or "stop" | Stop the pipeline immediately |
 | Phase gate fails 3 times | Ask user to intervene — do not loop forever |
 | Merge conflict in Phase 7 | `/ship` handles this — do not duplicate |
+| Parallel agent fails | Report failure with reason, ask user: Retry / Skip / Abort |
+| Parallel agent times out | Report timeout, ask user to intervene |
+| Merge conflict between workstreams | Report conflicting files, ask user to resolve or assign a `/bugfix` agent |
+| Too many workstreams (>8) | Consolidate related workstreams until ≤8 — explain the merges to the user |
 
 ---
 
@@ -290,3 +519,7 @@ Track these values across phases (in conversation context — no external storag
 4. **Do not duplicate skill logic.** Each phase calls the corresponding gstack skill. Do not reimplement what `/review`, `/qa`, or `/ship` already do.
 5. **Escalate, don't loop.** Max 3 rejection rounds at any gate. After 3, ask the user.
 6. **Progress updates.** At each phase transition, output a one-line status: `Phase N → Phase N+1: <reason>`
+7. **Parallel agents are isolated.** Each agent runs in its own worktree — they cannot see each other's changes until merge.
+8. **Wave ordering is strict.** Never launch Wave N+1 until all agents in Wave N have completed and their PRs are merged.
+9. **Skill routing matters.** Use `/bugfix` for bugs, `/debug` for investigation, `/orchestrate` for features — don't send everything through the same pipeline.
+10. **User confirms decomposition.** Never fan out agents without Phase P3 user approval — parallel work is expensive and hard to undo.
