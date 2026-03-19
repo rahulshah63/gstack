@@ -274,6 +274,16 @@ If the Eng Review is NOT "CLEAR":
    ```
    Substitute USER_CHOICE with "ship_anyway" or "not_relevant".
 
+4. **Load planning context:**
+
+**If `.gstack/HANDOFF.md` does not exist:** Skip silently.
+
+**If it exists:** Read it. Use the planning context to enrich the PR body in Step 8 — add a "Planning Context" section summarizing key decisions, scope exclusions, and unresolved items from prior reviews.
+
+```bash
+[ -f .gstack/HANDOFF.md ] && cat .gstack/HANDOFF.md
+```
+
 ---
 
 ## Step 2: Merge the base branch (BEFORE tests)
@@ -1005,6 +1015,10 @@ gh pr create --base <base> --title "<type>: <summary>" --body "$(cat <<'EOF'
 
 ## Eval Results
 <If evals ran: suite names, pass/fail counts, cost dashboard summary. If skipped: "No prompt-related files changed — evals skipped.">
+
+## Planning Context
+<If .gstack/HANDOFF.md was loaded: key decisions, scope exclusions, unresolved items from prior plan reviews>
+<If no HANDOFF.md: omit this section entirely>
 
 ## Greptile Review
 <If Greptile comments were found: bullet list with [FIXED] / [FALSE POSITIVE] / [ALREADY FIXED] tag + one-line summary per comment>

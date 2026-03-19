@@ -21,6 +21,10 @@ import type { Page, Locator } from 'playwright';
 import type { BrowserManager, RefEntry } from './browser-manager';
 import * as Diff from 'diff';
 
+function unescapeQuotedText(value: string): string {
+  return value.replace(/\\\\/g, '\\').replace(/\\"/g, '"');
+}
+
 // Roles considered "interactive" for the -i flag
 const INTERACTIVE_ROLES = new Set([
   'button', 'link', 'textbox', 'checkbox', 'radio', 'combobox',
@@ -110,8 +114,7 @@ export function parseSnapshotArgs(args: string[]): SnapshotOptions {
  *   - combobox "Role":
  */
 function parseLine(line: string): ParsedNode | null {
-  // Match: (indent)(- )(role)( "name")?( [props])?(: inline)?
-  const match = line.match(/^(\s*)-\s+(\w+)(?:\s+"([^"]*)")?(?:\s+(\[.*?\]))?\s*(?::\s*(.*))?$/);
+  const match = line.match(/^(\s*)-\s+(\w+)(?:\s+"((?:[^"\\]|\\.)*)")?(?:\s+(\[.*?\]))?\s*(?::\s*(.*))?$/);
   if (!match) {
     // Skip metadata lines like "- /url: /a"
     return null;
@@ -119,7 +122,7 @@ function parseLine(line: string): ParsedNode | null {
   return {
     indent: match[1].length,
     role: match[2],
-    name: match[3] ?? null,
+    name: match[3] ? unescapeQuotedText(match[3]) : null,
     props: match[4] || '',
     children: match[5]?.trim() || '',
     rawLine: line,

@@ -42,7 +42,7 @@ Expect first useful run in under 5 minutes on any repo with tests already set up
 
 ## Install — takes 30 seconds
 
-**Requirements:** [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Git](https://git-scm.com/), [Bun](https://bun.sh/) v1.0+
+**Requirements:** [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Git](https://git-scm.com/), [Bun](https://bun.sh/) v1.0+. `/browse` compiles a native binary and `./setup` installs Playwright Chromium.
 
 ### Step 1: Install on your machine
 
@@ -55,6 +55,13 @@ Open Claude Code and paste this. Claude does the rest.
 > Add gstack to this project: run **`cp -Rf ~/.claude/skills/gstack .claude/skills/gstack && rm -rf .claude/skills/gstack/.git && cd .claude/skills/gstack && ./setup`** then add a "gstack" section to this project's CLAUDE.md that says to use the /browse skill from gstack for all web browsing, never use mcp\_\_claude-in-chrome\_\_\* tools, lists the available skills: /office-hours, /plan-ceo-review, /plan-eng-review, /plan-design-review, /design-consultation, /review, /ship, /browse, /qa, /qa-only, /design-review, /setup-browser-cookies, /retro, /investigate, /document-release, /codex, /careful, /freeze, /guard, /unfreeze, /gstack-upgrade, and tells Claude that if gstack skills aren't working, run `cd .claude/skills/gstack && ./setup` to build the binary and register skills.
 
 Real files get committed to your repo (not a submodule), so `git clone` just works. Everything lives inside `.claude/`. Nothing touches your PATH or runs in the background.
+
+What gets installed:
+- Skill files in `~/.claude/skills/gstack/` or `.claude/skills/gstack/`
+- Skill symlinks like `~/.claude/skills/browse`, `~/.claude/skills/qa`, and `~/.claude/skills/review`
+- The `browse/dist/browse` binary
+- Playwright Chromium, if it is missing
+- `node_modules/` and local `/retro` snapshots under `.context/retros/`
 
 ## See it work
 

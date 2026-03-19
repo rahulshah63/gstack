@@ -32,7 +32,9 @@ ensureStateDir(config);
 // ─── Auth ───────────────────────────────────────────────────────
 const AUTH_TOKEN = crypto.randomUUID();
 const BROWSE_PORT = parseInt(process.env.BROWSE_PORT || '0', 10);
+const SETTINGS_FILE = process.env.BROWSE_SETTINGS_FILE || path.join(config.stateDir, 'browse.settings.json');
 const IDLE_TIMEOUT_MS = parseInt(process.env.BROWSE_IDLE_TIMEOUT || '1800000', 10); // 30 min
+const SHUTDOWN_GRACE_MS = 1000;
 
 function validateAuth(req: Request): boolean {
   const header = req.headers.get('authorization');
@@ -158,7 +160,7 @@ import { READ_COMMANDS, WRITE_COMMANDS, META_COMMANDS } from './commands';
 export { READ_COMMANDS, WRITE_COMMANDS, META_COMMANDS };
 
 // ─── Server ────────────────────────────────────────────────────
-const browserManager = new BrowserManager();
+const browserManager = new BrowserManager(SETTINGS_FILE);
 let isShuttingDown = false;
 
 // Find port: explicit BROWSE_PORT, or random in 10000-60000
@@ -275,7 +277,14 @@ async function shutdown() {
   clearInterval(idleCheckInterval);
   await flushBuffers(); // Final flush (async now)
 
-  await browserManager.close();
+  try {
+    // Graceful close is best-effort here. If Chromium hangs, still exit so
+    // stop/restart cannot wedge forever.
+    await Promise.race([
+      browserManager.close(),
+      Bun.sleep(SHUTDOWN_GRACE_MS),
+    ]);
+  } catch {}
 
   // Clean up state file
   try { fs.unlinkSync(config.stateFile); } catch {}
@@ -350,7 +359,7 @@ async function start() {
     port,
     token: AUTH_TOKEN,
     startedAt: new Date().toISOString(),
-    serverPath: path.resolve(import.meta.dir, 'server.ts'),
+    serverPath: path.resolve(import.meta.dir ?? import.meta.dirname ?? path.dirname(new URL(import.meta.url).pathname), 'server.ts'),
     binaryVersion: readVersionHash() || undefined,
   };
   const tmpFile = config.stateFile + '.tmp';

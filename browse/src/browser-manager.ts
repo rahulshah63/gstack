@@ -15,9 +15,10 @@
  *   restores state. Falls back to clean slate on any failure.
  */
 
-import { chromium, type Browser, type BrowserContext, type BrowserContextOptions, type Page, type Locator, type Cookie } from 'playwright';
-import { addConsoleEntry, addNetworkEntry, addDialogEntry, networkBuffer, type DialogEntry } from './buffers';
+import { chromium, type Browser, type BrowserContext, type BrowserContextOptions, type Page, type Locator, type Cookie, type Request } from 'playwright';
+import { addConsoleEntry, addNetworkEntry, addDialogEntry, type DialogEntry, type NetworkEntry } from './buffers';
 import { validateNavigationUrl } from './url-validation';
+import * as fs from 'fs';
 
 export interface RefEntry {
   locator: Locator;
@@ -34,6 +35,10 @@ export interface BrowserState {
   }>;
 }
 
+interface BrowserSettings {
+  userAgent?: string | null;
+}
+
 export class BrowserManager {
   private browser: Browser | null = null;
   private context: BrowserContext | null = null;
@@ -42,6 +47,7 @@ export class BrowserManager {
   private nextTabId: number = 1;
   private extraHeaders: Record<string, string> = {};
   private customUserAgent: string | null = null;
+  private readonly settingsFile: string | null;
 
   /** Server port — set after server starts, used by cookie-import-browser command */
   public serverPort: number = 0;
@@ -60,8 +66,14 @@ export class BrowserManager {
   // ─── Handoff State ─────────────────────────────────────────
   private isHeaded: boolean = false;
   private consecutiveFailures: number = 0;
+  private requestEntries: WeakMap<Request, NetworkEntry> = new WeakMap();
+
+  constructor(settingsFile?: string | null) {
+    this.settingsFile = settingsFile ?? process.env.BROWSE_SETTINGS_FILE ?? null;
+  }
 
   async launch() {
+    this.loadSettings();
     this.browser = await chromium.launch({ headless: true });
 
     // Chromium crash → exit with clear message
@@ -286,6 +298,7 @@ export class BrowserManager {
   // ─── User Agent ────────────────────────────────────────────
   setUserAgent(ua: string) {
     this.customUserAgent = ua;
+    this.persistSettings();
   }
 
   getUserAgent(): string | null {
@@ -592,43 +605,66 @@ export class BrowserManager {
     });
 
     page.on('request', (req) => {
-      addNetworkEntry({
+      const entry: NetworkEntry = {
         timestamp: Date.now(),
         method: req.method(),
         url: req.url(),
-      });
+      };
+      addNetworkEntry(entry);
+      this.requestEntries.set(req, entry);
     });
 
     page.on('response', (res) => {
-      // Find matching request entry and update it (backward scan)
-      const url = res.url();
-      const status = res.status();
-      for (let i = networkBuffer.length - 1; i >= 0; i--) {
-        const entry = networkBuffer.get(i);
-        if (entry && entry.url === url && !entry.status) {
-          networkBuffer.set(i, { ...entry, status, duration: Date.now() - entry.timestamp });
-          break;
-        }
+      const entry = this.requestEntries.get(res.request());
+      if (entry) {
+        entry.status = res.status();
       }
     });
 
-    // Capture response sizes via response finished
     page.on('requestfinished', async (req) => {
       try {
-        const res = await req.response();
-        if (res) {
-          const url = req.url();
-          const body = await res.body().catch(() => null);
-          const size = body ? body.length : 0;
-          for (let i = networkBuffer.length - 1; i >= 0; i--) {
-            const entry = networkBuffer.get(i);
-            if (entry && entry.url === url && !entry.size) {
-              networkBuffer.set(i, { ...entry, size });
-              break;
-            }
-          }
+        const entry = this.requestEntries.get(req);
+        if (!entry) return;
+        const timing = req.timing();
+        if (timing.responseEnd >= 0) {
+          entry.duration = Math.round(timing.responseEnd);
         }
-      } catch {}
+        const sizes = await req.sizes().catch(() => null);
+        if (sizes) {
+          entry.size = sizes.responseBodySize;
+        }
+      } catch {
+      } finally {
+        this.requestEntries.delete(req);
+      }
     });
+
+    page.on('requestfailed', (req) => {
+      const entry = this.requestEntries.get(req);
+      if (entry) {
+        const timing = req.timing();
+        if (timing.responseEnd >= 0) {
+          entry.duration = Math.round(timing.responseEnd);
+        }
+      }
+      this.requestEntries.delete(req);
+    });
+  }
+
+  private loadSettings() {
+    if (!this.settingsFile) return;
+    try {
+      const settings = JSON.parse(fs.readFileSync(this.settingsFile, 'utf-8')) as BrowserSettings;
+      this.customUserAgent = settings.userAgent ?? null;
+    } catch {}
+  }
+
+  private persistSettings() {
+    if (!this.settingsFile) return;
+    fs.writeFileSync(
+      this.settingsFile,
+      JSON.stringify({ userAgent: this.customUserAgent } satisfies BrowserSettings, null, 2),
+      { mode: 0o600 }
+    );
   }
 }

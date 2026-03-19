@@ -474,7 +474,7 @@ Refs are invalidated on navigation — run `snapshot` again after `goto`.
 | Command | Description |
 |---------|-------------|
 | `click <sel>` | Click element |
-| `cookie <name>=<value>` | Set cookie on current page domain |
+| `cookie <name>=<value> [origin]` | Set cookie on current page domain |
 | `cookie-import <json>` | Import cookies from JSON file |
 | `cookie-import-browser [browser] [--domain d]` | Import cookies from Comet, Chrome, Arc, Brave, or Edge (opens picker, or use --domain for direct import) |
 | `dialog-accept [text]` | Auto-accept next alert/confirm/prompt. Optional text is sent as the prompt response |
